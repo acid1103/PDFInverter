@@ -1,0 +1,15 @@
+.gradle
+/build/
+gradle-app.setting
+.gradletasknamecache
+
+/bin/
+*.class
+*.jar
+hs_err_pid*
+.project
+.settings
+.classpath
+.pdf
+
+!gradle-wrapper.jar

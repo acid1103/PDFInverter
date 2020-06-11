@@ -1,0 +1,120 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import org.kohsuke.github.GitHubBuilder
+import java.security.MessageDigest
+import java.util.stream.StreamSupport
+
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath 'com.github.jengelman.gradle.plugins:shadow:5.2.0'
+        classpath 'org.kohsuke:github-api:1.112'
+    }
+}
+
+apply plugin: 'java-library'
+apply plugin: 'maven'
+apply plugin: 'com.github.johnrengelman.shadow'
+
+repositories {
+    mavenLocal()
+    jcenter()
+}
+
+dependencies {
+    implementation 'org.apache.pdfbox:pdfbox:2.0.19'
+    implementation 'com.github.ajalt:colormath:1.4.1'
+}
+
+task buildAndMaybeRelease(type: ShadowJar) {
+    group = 'Build'
+    description = 'Builds an executable fat jar and creates a release draft if a git tag is present.'
+    manifest {
+        attributes([
+            'Main-Class': 'org.abitoff.pdfinverter.Main',
+            'Build-Date': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+            'License': file('LICENSE').getText()
+        ])
+    }
+    baseName = 'PDFInverter'
+    classifier = ''
+    from sourceSets.main.runtimeClasspath
+    configurations = [ project.configurations.runtimeClasspath ]
+    doLast {
+        maybeRelease()
+    }
+}
+
+def maybeRelease() {
+    def gh_actions = System.getenv('GITHUB_ACTIONS');
+    if (gh_actions == null || gh_actions.isEmpty()) {
+        println 'CI not detected! Skipping check for release.'
+        return
+    }
+
+    def token = System.getenv('GITHUB_TOKEN')
+    def github = new GitHubBuilder().withJwtToken(token).build()
+    def repo_str = System.getenv('GITHUB_REPOSITORY')
+    def repo = github.getRepository(repo_str)
+    def sha = System.getenv('GITHUB_SHA')
+    def tags = StreamSupport.stream(repo.listTags().spliterator(), false)
+    def tagOpt = tags.filter({ t -> sha.equals(t.getCommit().getSHA1()) }).findAny()
+    if (tagOpt.isPresent()) {
+        def tag = tagOpt.get()
+
+        println 'Tag ' + tag.getName() + ' present. Creating a release.'
+
+        def jar_file = file('build/libs/PDFInverter.jar')
+        def md5_hash = md5(jar_file)
+        def sha1_hash = sha1(jar_file)
+        def sha256_hash = sha256(jar_file)
+
+        def builder = repo.createRelease(tag.getName())
+        builder.name(tag.getName())
+        builder.body('PDFInverter.jar hashes:\n```\nMD5:    ' + md5_hash + '\nSHA1:   ' + sha1_hash + '\nSHA256: '
+                + sha256_hash + '\n```')
+        builder.draft(true)
+        def release = builder.create()
+
+        def license = file('LICENSE')
+        release.uploadAsset('PDFInverter.jar', jar_file.newInputStream(), 'application/java-archive')
+        release.uploadAsset('LICENSE', license.newInputStream(), 'text/plain')
+    } else {
+        println 'No tag detected. Not creating a release.'
+    }
+}
+
+def md5(file) {
+    return hash(file, 'MD5')
+}
+
+def sha1(file) {
+    return hash(file, 'SHA-1')
+}
+
+def sha256(file) {
+    return hash(file, 'SHA-256')
+}
+
+def hash(file, alg) {
+    def digest = MessageDigest.getInstance(alg)
+    def inputstream = file.newInputStream()
+    def buffer = new byte[1048576]
+    def len
+
+    while((len=inputstream.read(buffer)) > 0) {
+        digest.update(buffer, 0, len)
+    }
+
+    inputstream.close();
+    def sum = digest.digest()
+
+    def result = ''
+    for(byte b : sum) {
+        int byt = Byte.toUnsignedInt(b)
+        result += Integer.toHexString(byt)
+    }
+
+    return result
+}

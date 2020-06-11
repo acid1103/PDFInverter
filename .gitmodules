@@ -1,0 +1,4 @@
+[submodule "pdfbox"]
+	path = pdfbox
+	url = https://github.com/acid1103/pdfbox
+	branch = 2.0.19-modified
