@@ -291,9 +291,9 @@ public class PDFColorInverter extends PDFGraphicsStreamEngine
 	 * {@code invertImages} is true, inverts every image on every page.
 	 * </p>
 	 * <p>
-	 * Specifically, this method iterates through each page, processes each page's content streams (see ง7.8.2 of the
+	 * Specifically, this method iterates through each page, processes each page's content streams (see ยง7.8.2 of the
 	 * <a href="https://www.adobe.com/content/dam/acom/en/devnet/pdf/pdfs/PDF32000_2008.pdf">PDF specifications</a>),
-	 * determines the locations of each "{@link SetColor}" operation (see ง8.6.8), and replaces these operations with an
+	 * determines the locations of each "{@link SetColor}" operation (see ยง8.6.8), and replaces these operations with an
 	 * {@code RG} operation whose parameters are the inverse of the corresponding {@code SetColor} operation. Next it
 	 * prepends a rectangle the size of the PDF page whose fill color is equal to the RGB value given in
 	 * {@code background}. Finally, it iterates through each image in the page and inverts the image.
