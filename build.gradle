@@ -113,7 +113,7 @@ def hash(file, alg) {
     def result = ''
     for(byte b : sum) {
         int byt = Byte.toUnsignedInt(b)
-        result += Integer.toHexString(byt)
+        result += String.format("%02x", byt)
     }
 
     return result
