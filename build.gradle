@@ -23,7 +23,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'org.apache.pdfbox:pdfbox:2.0.19'
+    implementation 'org.apache.pdfbox:pdfbox:2.0.21'
     implementation 'com.github.ajalt:colormath:1.4.1'
 }
 
