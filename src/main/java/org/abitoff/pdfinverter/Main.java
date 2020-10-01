@@ -55,7 +55,7 @@ public class Main
 
 		// default to black
 		Integer backgroundRGB = 0x000000;
-		if (args[2] != null)
+		if (args.length > 2 && args[2] != null)
 		{
 			try
 			{
@@ -71,7 +71,7 @@ public class Main
 			}
 		}
 
-		boolean invertImages = args[3] != null ? Boolean.parseBoolean(args[3]) : true;
+		boolean invertImages = (args.length > 3 && args[3] != null) ? Boolean.parseBoolean(args[3]) : true;
 
 		// convert background to float array. in the future, i plan on allowing increased bit-depth. floats offer a bit
 		// depth of about 24 bits in the range [0.0, 1.0], which is a greater bit depth than most standards i'm aware of
