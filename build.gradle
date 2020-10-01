@@ -33,8 +33,7 @@ task buildAndMaybeRelease(type: ShadowJar) {
     manifest {
         attributes([
             'Main-Class': 'org.abitoff.pdfinverter.Main',
-            'Build-Date': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
-            'License': file('LICENSE').getText()
+            'Build-Date': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
         ])
     }
     baseName = 'PDFInverter'
