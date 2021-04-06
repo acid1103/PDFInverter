@@ -25,10 +25,15 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.abitoff.pdfinverter.StreamHandler;
+import org.abitoff.pdfinverter.util.IOFunctions;
 import org.apache.pdfbox.contentstream.operator.Operator;
 import org.apache.pdfbox.contentstream.operator.OperatorProcessor;
 import org.apache.pdfbox.contentstream.operator.color.SetColor;
@@ -37,15 +42,11 @@ import org.apache.pdfbox.contentstream.operator.color.SetStrokingColor;
 import org.apache.pdfbox.cos.COSBase;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.cos.COSObject;
-import org.apache.pdfbox.io.IOUtils;
 import org.apache.pdfbox.pdfparser.PDFStreamColorSlicer;
 import org.apache.pdfbox.pdfparser.PDFStreamColorSlicer.StreamSlice;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
-import org.apache.pdfbox.pdmodel.PDPageContentStream;
-import org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode;
 import org.apache.pdfbox.pdmodel.PDResources;
-import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.graphics.PDXObject;
 import org.apache.pdfbox.pdmodel.graphics.color.PDColor;
 import org.apache.pdfbox.pdmodel.graphics.color.PDColorSpace;
@@ -69,28 +70,51 @@ import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
  * @author Steven Fontaine
  *
  */
-public class PDFColorInverter extends PDFGraphicsStreamEngine
+public class PDFColorInverter extends PDFGraphicsStreamEngine implements AutoCloseable
 {
-	/**
-	 * List which, after calling {@link PDFColorInverter#processPage(PDPage)}, contains a
-	 * {@link SetColorOperatorStreamSlice} representing each {@link SetColor} operator in this page's content stream.
-	 */
-	private final List<SetColorOperatorStreamSlice> colorOpSlices = new ArrayList<SetColorOperatorStreamSlice>();
+	/** A map containing our current writing position in any stream */
+	private final Map<PDContentStream, Long> positionMap = new HashMap<>();
 
-	protected PDFColorInverter(PDPage page)
+	/** A set of all encountered streams */
+	private final Set<PDContentStream> contentStreamSet = new HashSet<>();
+
+	/** Our instance of a {@link StreamHandler} */
+	private final StreamHandler streamHandler;
+
+	private final float[] background;
+
+	protected PDFColorInverter(PDPage page, StreamHandler streamHandler, float[] background)
 	{
 		super(page);
+
+		this.background = background;
+
+		// start the stream handler
+		this.streamHandler = streamHandler;
+		new Thread(streamHandler).start();
 	}
 
 	/**
-	 * Very similar to {@link PDFGraphicsStreamEngine#processStreamOperators(PDContentStream)}. Additionally, it finds
-	 * the bounds of each {@link SetColor} operator, constructs a {@link SetColorOperatorStreamSlice}, and adds it to
-	 * {@link PDFColorInverter#colorOpSlices}.
+	 * Very similar to {@link PDFGraphicsStreamEngine#processStreamOperators(PDContentStream) processStreamOperators}.
+	 * Additionally, it finds the bounds of each {@link SetColor} operator, constructs a
+	 * {@link SetColorOperatorStreamSlice}, inverts the colors, and instructs {@link StreamHandler} to write the
+	 * modifications.
 	 */
 	protected void processStreamOperators(PDContentStream contentStream) throws IOException
 	{
+		// have we seen this stream before?
+		boolean processStream = !contentStreamSet.contains(contentStream);
+		contentStreamSet.add(contentStream);
+
+		// add the background rect
+		if (processStream && contentStream instanceof PDPage)
+			writeBackground((PDPage) contentStream, background);
+
 		List<StreamSlice> arguments = new ArrayList<StreamSlice>();
 		PDFStreamColorSlicer parser = new PDFStreamColorSlicer(contentStream);
+
+		// keep track of the previous valid slice to use when we hit the end of the stream
+		StreamSlice lastSlice = null;
 		StreamSlice slice = parser.getNextSlice();
 		while (slice.token != null)
 		{
@@ -98,8 +122,13 @@ public class PDFColorInverter extends PDFGraphicsStreamEngine
 			{
 				OperatorProcessor processor =
 						processOperatorAndReturnProcessor((Operator) slice.token, mapToCOSBaseList(arguments));
-				if (processor instanceof SetColor)
-					this.colorOpSlices.add(generateColorSlice(arguments, slice, (SetColor) processor));
+				if (processStream && processor instanceof SetColor)
+				{
+					// get relevant info about the SetColor slice
+					SetColorOperatorStreamSlice scoss = generateColorSlice(arguments, slice, (SetColor) processor);
+					// invert the color and write it back to the stream
+					handleSlice(contentStream, scoss);
+				}
 
 				arguments.clear();
 			} else
@@ -107,8 +136,89 @@ public class PDFColorInverter extends PDFGraphicsStreamEngine
 				arguments.add(slice);
 			}
 
+			lastSlice = slice;
 			slice = parser.getNextSlice();
 		}
+
+		if (processStream)
+			handleEndOfStream(contentStream, lastSlice);
+	}
+
+	private void writeBackground(PDPage page, float[] background)
+	{
+		float width = page.getMediaBox().getWidth();
+		float height = page.getMediaBox().getHeight();
+
+		String nsc = background[0] + " " + background[1] + " " + background[2] + " rg ";
+		String rect = "0 0 " + width + " " + height + " re ";
+		String fill = "f ";
+
+		String command = nsc + rect + fill;
+		byte[] commandBytes = command.getBytes(StandardCharsets.UTF_8);
+
+		IOFunctions.ignoreInterrupts(() -> streamHandler.writeToStream(page, commandBytes));
+	}
+
+	/**
+	 * Write the data at the end of streams
+	 * 
+	 * @param contentStream
+	 *            the stream being sliced
+	 * @param lastSlice
+	 *            the last valid slice, containing the end bound of the stream
+	 */
+	private void handleEndOfStream(PDContentStream contentStream, StreamSlice lastSlice)
+	{
+		if (lastSlice != null)
+		{
+			// get our current position and copy everything between our last position and the very end of the stream
+			long pos = positionMap.computeIfAbsent(contentStream, s -> 0l);
+			IOFunctions.ignoreInterrupts(() -> streamHandler.copyFromStream(contentStream, pos, lastSlice.end + 1));
+		}
+	}
+
+	/**
+	 * Instruct the {@link StreamHandler} to copy all the data between the last slice and this one. Then invert the
+	 * colors in the given slice and instruct the {@link StreamHandler} to write the new data as well.
+	 * 
+	 * @param contentStream
+	 *            the stream being sliced
+	 * @param slice
+	 *            the slice to handle
+	 * @throws IOException
+	 *             if something goes wrong
+	 */
+	private void handleSlice(PDContentStream contentStream, SetColorOperatorStreamSlice slice) throws IOException
+	{
+		// get our current position in this stream
+		long pos = positionMap.computeIfAbsent(contentStream, s -> 0l);
+		// copy all the data between the last color slice and this one
+		IOFunctions.ignoreInterrupts(() -> streamHandler.copyFromStream(contentStream, pos, slice.start));
+
+		if (slice.color.getColorSpace() instanceof PDPattern)
+		{
+			System.err.println("Patterns aren't currently supported!");
+			// patterns aren't currently supported, so just copy the old operation
+			IOFunctions.ignoreInterrupts(() -> streamHandler.copyFromStream(contentStream, slice.start, slice.end));
+		} else
+		{
+			PDColorSpace cs = slice.color.getColorSpace();
+			// float representation of rgb gives ~24 bits per component
+			float[] rgb = cs.toRGB(slice.color.getComponents());
+			// invert the rgb values
+			rgb[0] = 1f - rgb[0];
+			rgb[1] = 1f - rgb[1];
+			rgb[2] = 1f - rgb[2];
+
+			// construct the new operation
+			String command = " " + rgb[0] + " " + rgb[1] + " " + rgb[2] + " " + (slice.stroking ? "RG " : "rg ");
+			byte[] commandBytes = command.getBytes(StandardCharsets.UTF_8);
+			// instruct the stream handler to write the new command
+			IOFunctions.ignoreInterrupts(() -> streamHandler.writeToStream(contentStream, commandBytes));
+		}
+
+		// update our position for this stream
+		positionMap.put(contentStream, slice.end);
 	}
 
 	/**
@@ -197,6 +307,14 @@ public class PDFColorInverter extends PDFGraphicsStreamEngine
 	}
 
 	@Override
+	public void close()
+	{
+		// close the stream handler, which shuts down the thread, writes all pending changes, closes any open resources,
+		// and deletes any temp files
+		streamHandler.close();
+	}
+
+	@Override
 	public void appendRectangle(Point2D p0, Point2D p1, Point2D p2, Point2D p3) throws IOException
 	{
 	}
@@ -270,12 +388,12 @@ public class PDFColorInverter extends PDFGraphicsStreamEngine
 	 */
 	private static final class SetColorOperatorStreamSlice
 	{
-		private final int start;
-		private final int end;
+		private final long start;
+		private final long end;
 		private final PDColor color;
 		private final boolean stroking;
 
-		private SetColorOperatorStreamSlice(int start, int end, PDColor color, boolean stroking)
+		private SetColorOperatorStreamSlice(long start, long end, PDColor color, boolean stroking)
 		{
 			this.start = start;
 			this.end = end;
@@ -293,90 +411,44 @@ public class PDFColorInverter extends PDFGraphicsStreamEngine
 	 * <p>
 	 * Specifically, this method iterates through each page, processes each page's content streams (see §7.8.2 of the
 	 * <a href="https://www.adobe.com/content/dam/acom/en/devnet/pdf/pdfs/PDF32000_2008.pdf">PDF specifications</a>),
-	 * determines the locations of each "{@link SetColor}" operation (see §8.6.8), and replaces these operations with an
-	 * {@code RG} operation whose parameters are the inverse of the corresponding {@code SetColor} operation. Next it
+	 * determines the locations of each "{@link SetColor}" operation (see §8.6.8), and replaces these operations with
+	 * an {@code RG} operation whose parameters are the inverse of the corresponding {@code SetColor} operation. Next it
 	 * prepends a rectangle the size of the PDF page whose fill color is equal to the RGB value given in
 	 * {@code background}. Finally, it iterates through each image in the page and inverts the image.
 	 * </p>
 	 * 
 	 */
-	@SuppressWarnings("deprecation")
+	// @SuppressWarnings("deprecation")
 	public static final void invert(PDDocument doc, float[] background, boolean invertImages) throws IOException
 	{
 		assert (background == null || background.length == 3);
+		int numPages = doc.getNumberOfPages();
+		int pn = 0;
 		for (PDPage page: doc.getPages())
 		{
-			String stream = new String(IOUtils.toByteArray(page.getContents()), StandardCharsets.UTF_8);
-			StringBuilder invertedStreamBuilder = new StringBuilder();
-
-			PDFColorInverter inverter = new PDFColorInverter(page);
-			inverter.processPage(page);
-
-			// iterate through the SetColor operations
-			int start = 0;
-			for (SetColorOperatorStreamSlice slice: inverter.colorOpSlices)
+			System.out.println("Page " + (++pn) + "/" + numPages);
+			try (PDFColorInverter inverter = new PDFColorInverter(page, new StreamHandler(doc), background))
 			{
-				// copy the section of the content stream between the previous slice and the current slice into the
-				// inverted stream
-				invertedStreamBuilder.append(stream.substring(start, slice.start));
+				inverter.processPage(page);
 
-				PDColorSpace cs = slice.color.getColorSpace();
-				String command;
-				if (slice.color.getColorSpace() instanceof PDPattern)
+				if (invertImages)
 				{
-					System.err.println("Patterns aren't currently supported!");
-					// patterns aren't currently supported, so just use the old operation
-					command = stream.substring(slice.start, slice.end);
-				} else
-				{
-					// float representation of rgb gives ~24 bits per component
-					float[] rgb = cs.toRGB(slice.color.getComponents());
-					System.out.print(Arrays.toString(rgb) + " -> ");
-					// invert the rgb values
-					rgb[0] = 1f - rgb[0];
-					rgb[1] = 1f - rgb[1];
-					rgb[2] = 1f - rgb[2];
-					System.out.println(Arrays.toString(rgb));
-
-					// construct the new operation
-					command = " " + rgb[0] + " " + rgb[1] + " " + rgb[2] + " " + (slice.stroking ? "RG " : "rg ");
+					for (PDContentStream stream: inverter.contentStreamSet)
+						invertImagesOnPage(doc, stream);
 				}
-
-				// append the new operation to the new stream
-				invertedStreamBuilder.append(command);
-				start = slice.end;
 			}
-			// append the final slice of the old stream
-			invertedStreamBuilder.append(stream.subSequence(start, stream.length()));
-
-			// modify the current content stream of the current page in OVERWRITE mode
-			try (PDPageContentStream contentStream =
-					new PDPageContentStream(doc, page, AppendMode.OVERWRITE, true, false))
-			{
-				// if background isn't null, insert the background rectangle
-				if (background != null)
-				{
-					contentStream.setNonStrokingColor(background[0], background[1], background[2]);
-					PDRectangle rect = page.getMediaBox();
-					contentStream.addRect(0, 0, rect.getWidth(), rect.getHeight());
-					contentStream.fill();
-				}
-				// insert the new content stream
-				contentStream.appendRawCommands(invertedStreamBuilder.toString().getBytes(StandardCharsets.UTF_8));
-			}
-
-			if (invertImages)
-				invertImagesOnPage(doc, page);
 		}
 	}
 
 	/**
 	 * Iterates through all the resources on this {@code page}, and, if it's an image, inverts all the colors.
 	 */
-	private static void invertImagesOnPage(PDDocument doc, PDPage page) throws IOException
+	private static void invertImagesOnPage(PDDocument doc, PDContentStream page) throws IOException
 	{
 		// get resources
 		PDResources resources = page.getResources();
+		if (resources == null)
+			return;
 
 		// iterate over resource names
 		for (COSName name: resources.getXObjectNames())

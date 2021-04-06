@@ -27,7 +27,6 @@ import java.util.logging.Logger;
 
 import org.apache.pdfbox.contentstream.PDFColorInverter;
 import org.apache.pdfbox.pdmodel.PDDocument;
-
 import com.github.ajalt.colormath.ConvertibleColor;
 import com.github.ajalt.colormath.CssParseKt;
 
@@ -97,7 +96,7 @@ public class Main
 	{
 		System.out.println("Usage: \nPDFInverter.jar [in.pdf] [out.pdf] (background) (invert_images)\n"
 				+ "in.pdf: File to invert\n" + "out.pdf: Location for output file\n"
-				+ "background: CSS color string for the background of the PDF pages. White by default.\n"
+				+ "background: CSS color string for the background of the PDF pages. Black by default.\n"
 				+ "invert_images: Boolean which determines whether or not to invert all images in the PDF. \"true\" by default");
 	}
 }
